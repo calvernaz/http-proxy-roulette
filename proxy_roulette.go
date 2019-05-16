@@ -2,37 +2,67 @@ package roundtripper
 
 import (
 	"math/rand"
+	"sync"
 	"time"
 )
 
-type ProxyRoulette struct {
-	Proxies   []Proxy
-	Step      int
-	MaxWeight int
+// A proxy representation
+type Proxy struct {
+	Id int
+	Username string
+	Password string
+	Scheme string
+	Host string
+	Port int
+	Weight float32
 }
 
-func (pr ProxyRoulette) Select() (Proxy, error) {
-	rand.Seed(time.Now().UnixNano())
-	var r float64
+type ProxyRoulette struct {
+	once      sync.Once
+	maxWeight float32
+
+	Step    float32
+	Proxies []*Proxy
+}
+
+// floor clipping
+func (pr *ProxyRoulette) WeightDown(proxy *Proxy) {
+	proxy.Weight = proxy.Weight - (proxy.Weight / (pr.maxWeight * pr.Step))
+	if proxy.Weight < 0 {
+		proxy.Weight = 0
+	}
+}
+
+// ceil clipping
+func (pr *ProxyRoulette) WeightUp(proxy *Proxy) {
+	proxy.Weight = proxy.Weight + (proxy.Weight / (pr.maxWeight * pr.Step))
+	if proxy.Weight > pr.maxWeight {
+		proxy.Weight = pr.maxWeight
+	}
+}
+
+// Roulette-wheel selection via stochastic acceptance
+func (pr *ProxyRoulette) Select() (*Proxy, error) {
+	pr.once.Do(func() {
+		rand.Seed(time.Now().UnixNano())
+		// linear normalization
+		val := 1 / float32(len(pr.Proxies))
+		for _, proxy := range pr.Proxies {
+			proxy.Weight = val
+		}
+
+		pr.maxWeight = val
+	})
+
+	var index float32
 	for {
-		r = rand.Float64() * float64(len(pr.Proxies))
-		rr := rand.Float64()
-		rrr := float64(pr.Proxies[int(r)].Weight) / float64(pr.MaxWeight)
-
+		index = rand.Float32() * float32(len(pr.Proxies))
+		rr := rand.Float32()
+		rrr := pr.Proxies[int(index)].Weight / pr.maxWeight
 		if rr < rrr {
-			increment := float64(pr.MaxWeight- pr.Proxies[int(r)].Weight) / float64(pr.Step)
-			if pr.Proxies[int(r)].Weight + int(increment) > pr.MaxWeight {
-				pr.Proxies[int(r)].Weight = pr.MaxWeight
-			} else {
-				pr.Proxies[int(r)].Weight += int(increment)
-			}
-
-			if pr.Proxies[int(r)].Weight > pr.MaxWeight {
-				pr.MaxWeight = pr.Proxies[int(r)].Weight
-			}
 			break
 		}
 	}
-	return pr.Proxies[int(r)], nil
-}
 
+	return pr.Proxies[int(index)], nil
+}
